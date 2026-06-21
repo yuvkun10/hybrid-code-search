@@ -1,0 +1,58 @@
+%% hybrid-code-search index + search pipeline
+%% Sources: chunker.py, embedder.py, tokenize.py, ranking.py, index.py, store.py, cli.py
+flowchart TD
+    subgraph index_phase["Index phase"]
+        roots["Input paths or root dir"]
+        walk["chunk_paths / _iter_files<br/>os.walk, skip dotdirs and<br/>node_modules .git .venv dist build __pycache__<br/>skip binary files and files over max_file_bytes (1 MB)"]
+        chunk["chunk_source per file<br/>detect_language by extension"]
+        pyast["_chunk_python (AST)<br/>module, function, class, method chunks"]
+        win["_sliding_window<br/>40-line windows, 10-line overlap<br/>kind=block (non-Python or SyntaxError)"]
+        chunks["list[Chunk]<br/>id=sha1(path:start:end)[:16]"]
+        embedder["Embedder.embed(chunk.text)<br/>HashingEmbedder (default, dim 256, blake2b)<br/>or SentenceTransformerEmbedder (optional)"]
+        matrix["_as_normalized_matrix<br/>float32 rows, L2-normalized"]
+        lex["LexicalIndex(chunks)<br/>tokenize -> per-chunk term freqs,<br/>doc lengths, IDF (BM25 precompute)"]
+        codeindex["CodeIndex<br/>(chunks, embedder, matrix, lexical)"]
+    end
+
+    roots --> walk --> chunk
+    chunk -->|language == python| pyast --> chunks
+    chunk -->|other / parse error| win --> chunks
+    chunks --> embedder --> matrix --> codeindex
+    chunks --> lex --> codeindex
+
+    subgraph persist["Persistence (store.py, JSON)"]
+        save["save_index<br/>version, embedder meta,<br/>chunks, vectors; atomic os.replace"]
+        load["load_index<br/>reuse stored vectors (no re-embed),<br/>rebuild LexicalIndex, validate dim"]
+    end
+    codeindex --> save
+    load --> codeindex
+
+    subgraph search_phase["Search phase: CodeIndex.search(query, k, alpha)"]
+        q["query string"]
+        qempty{"chunks empty<br/>or blank query?"}
+        none["return []"]
+        qvec["embedder.embed([query])[0]<br/>L2-normalize"]
+        cos["cosines = matrix @ query_vector<br/>(rows pre-normalized => cosine)"]
+        vscore["vector_scores: chunk.id -> cosine"]
+        lscore["lexical._lexical.scores(query)<br/>raw BM25 (k1=1.5, b=0.75)"]
+        fuse["fuse(vector_scores, lexical_scores, alpha)<br/>min-max normalize each, then<br/>alpha*vector + (1-alpha)*lexical"]
+        rank["sort by fused desc, take top_k = min(k, n)"]
+        results["list[SearchResult]<br/>score, vector_score,<br/>normalized lexical_score"]
+    end
+
+    q --> qempty
+    qempty -->|yes| none
+    qempty -->|no| qvec --> cos --> vscore --> fuse
+    q --> lscore --> fuse
+    fuse --> rank --> results
+
+    codeindex --> qempty
+
+    subgraph entrypoints["Entry points"]
+        cli["CLI (cli.py, typer)<br/>index: build + save_index<br/>search: load_index + search"]
+        http["HTTP service (service.py, FastAPI)<br/>POST /index, POST /search, GET /health"]
+    end
+    cli --> roots
+    cli --> q
+    http --> roots
+    http --> q
