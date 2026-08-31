@@ -1,0 +1,48 @@
+version: 2
+updates:
+- package-ecosystem: github-actions
+  directory: "/"
+  schedule:
+    interval: weekly
+    time: '09:00'
+    timezone: Australia/Melbourne
+    day: wednesday
+  open-pull-requests-limit: 5
+  groups:
+    actions-minor-patch:
+      applies-to: version-updates
+      patterns:
+      - "*"
+      update-types:
+      - minor
+      - patch
+    actions-major:
+      applies-to: version-updates
+      patterns:
+      - "*"
+      update-types:
+      - major
+    actions-security:
+      applies-to: security-updates
+      patterns:
+      - "*"
+- package-ecosystem: pip
+  directory: "/"
+  schedule:
+    interval: weekly
+    time: '09:10'
+    timezone: Australia/Melbourne
+    day: wednesday
+  open-pull-requests-limit: 5
+  groups:
+    pip-minor-patch:
+      applies-to: version-updates
+      patterns:
+      - "*"
+      update-types:
+      - minor
+      - patch
+    pip-security:
+      applies-to: security-updates
+      patterns:
+      - "*"
