@@ -10,6 +10,59 @@ This document describes the modules under `src/hybrid_code_search/`, the
 indexing pipeline, the `/search` request path, the provider-inversion design,
 and the rationale for hybrid ranking.
 
+## Pipeline overview
+
+Diagram source: [architecture.mmd](architecture.mmd). A detailed version is in
+[diagrams/pipeline.mmd](diagrams/pipeline.mmd).
+
+```mermaid
+flowchart TD
+    A[Source paths] --> B[Walk files]
+    B --> C{Python source?}
+    C -->|yes| D[AST chunking: module, class, function, method]
+    C -->|no| E[Sliding line-window chunks]
+    D --> F[Chunks]
+    E --> F[Chunks]
+    F --> G[Embed each chunk text]
+    G --> H[L2-normalized vector matrix]
+    F --> I[Tokenize and build BM25 lexical index]
+    J[Query] --> K[Embed query -> cosine vs matrix]
+    J --> L[BM25 scores over chunks]
+    H --> K
+    I --> L
+    K --> M[Min-max normalize both score sets]
+    L --> M
+    M --> N["Fuse: alpha * vector + (1 - alpha) * lexical"]
+    N --> O[Sort, take top k -> SearchResult list]
+```
+
+1. **Chunk.** Files are walked, skipping dot-directories and a fixed set of build
+   directories (`node_modules`, `.git`, `.venv`, `dist`, `build`, `__pycache__`),
+   binary files (those containing a NUL byte in the first 8 KiB), and files larger
+   than `max_file_bytes` (default 1,000,000). Python files are parsed with the
+   standard-library `ast` module and split into module, class, function, and method
+   chunks; on a `SyntaxError` they fall back to line windows. All other files are split
+   into overlapping 40-line windows with 10 lines of overlap (kind `block`). Language is
+   inferred from the file extension.
+
+2. **Embed.** Each chunk's text is mapped to a fixed-dimension, L2-normalized vector by
+   the configured embedder. The default `HashingEmbedder` hashes tokens into buckets
+   with a signed count using blake2b (stable across processes, unlike the builtin
+   `hash()`).
+
+3. **Index.** Vectors are stacked into a float32 matrix with each row re-normalized. In
+   parallel, chunk text is tokenized and a `LexicalIndex` precomputes BM25 document
+   frequencies, term frequencies, lengths, and IDF.
+
+4. **Rank.** At query time the query vector's cosine similarity against every row gives
+   the vector scores; BM25 gives the lexical scores. Both sets are min-max normalized to
+   `[0, 1]` and combined as `alpha * vector + (1 - alpha) * lexical`. Results are sorted
+   by the fused score (ties broken by chunk id) and the top `k` are returned.
+
+Tokenization splits on non-alphanumeric characters and further decomposes camelCase,
+snake_case, and letter/digit boundaries, lowercasing each token. Single-character
+tokens are dropped unless purely numeric. BM25 uses `k1 = 1.5`, `b = 0.75`.
+
 ## Module map
 
 | Module | Responsibility |
@@ -272,3 +325,25 @@ is dense-only and `alpha = 0.0` is lexical-only, letting a caller tune toward
 semantic recall or exact-match precision per query. The shared tokenizer
 (`tokenize.py`) feeds both the hashing embedder and BM25, so the two halves agree
 on what a token is.
+
+## Limitations
+
+- AST-aware chunking is implemented for Python only. Every other language is split into
+  fixed line windows, which can cut across symbol boundaries. The extension-to-language
+  map only labels chunks; it does not change how non-Python files are chunked.
+- The default `HashingEmbedder` is not a trained model. It captures token overlap, not
+  learned semantics; "vector similarity" with it is closer to a hashed bag-of-tokens
+  measure than to meaning. For genuine semantic retrieval, use the
+  `sentence-transformers` backend.
+- The index is entirely in memory. There is no approximate nearest-neighbor structure:
+  search is a dense matrix-vector product over all chunks, which is linear in corpus
+  size. This is fine for a single repository and will not scale to very large corpora.
+- The index is static once built. There is no incremental update or file-watching;
+  changing source requires rebuilding (`build_index` / `scs index` / `POST /index`).
+- The HTTP service keeps one index in process memory with no authentication, no
+  persistence across restarts, and no concurrency control beyond replacing the index
+  reference on re-index.
+- Persisted indexes store raw vectors as JSON. The format is inspectable but not
+  compact, and is versioned (`version: 1`); loading a different version raises.
+- Files are decoded as UTF-8 with replacement; unreadable files are silently skipped
+  and contribute no chunks.
