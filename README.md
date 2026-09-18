@@ -120,6 +120,31 @@ Tokenization splits on non-alphanumeric characters and further decomposes camelC
 snake_case, and letter/digit boundaries, lowercasing each token. Single-character
 tokens are dropped unless purely numeric. BM25 uses `k1 = 1.5`, `b = 0.75`.
 
+## Repository map
+
+```text
+.
+|-- src/hybrid_code_search/
+|   |-- chunker.py        # File walk, Python AST chunks, line windows
+|   |-- embedder.py       # Hashing embedder, optional sentence-transformers
+|   |-- tokenize.py       # Code-aware tokenizer
+|   |-- ranking.py        # BM25 lexical index and score fusion
+|   |-- index.py          # CodeIndex build and search
+|   |-- store.py          # JSON save and load
+|   |-- cli.py            # scs command
+|   `-- service.py        # FastAPI app
+|-- tests/                # pytest suite
+|-- docs/                 # Architecture notes and diagram sources
+|-- vault/                # Design notes (chunking, ranking, glossary)
+|-- .github/              # CI configuration
+|-- pyproject.toml        # Package metadata, extras, tool config
+`-- CONTRIBUTING.md
+```
+
+The README diagram source is in [docs/architecture.mmd](docs/architecture.mmd). A detailed
+version is in [docs/diagrams/pipeline.mmd](docs/diagrams/pipeline.mmd), with notes in
+[docs/architecture.md](docs/architecture.md).
+
 ## CLI
 
 The package installs a `scs` command (two subcommands).
@@ -189,8 +214,8 @@ Response:
 **Embedder.** Selected via constructor argument, the `--embedder` CLI flag, or the
 `resolve_embedder` helper, which reads environment variables when no argument is given:
 
-- `SCS_EMBEDDER` — `hashing` (default) or `sentence-transformers`.
-- `SCS_MODEL` — model name, required when `SCS_EMBEDDER=sentence-transformers`.
+- `SCS_EMBEDDER`: `hashing` (default) or `sentence-transformers`.
+- `SCS_MODEL`: model name, required when `SCS_EMBEDDER=sentence-transformers`.
 
 The `sentence-transformers` backend requires the `transformers` extra; constructing it
 without the dependency installed raises a clear `ImportError`. Selecting it without a

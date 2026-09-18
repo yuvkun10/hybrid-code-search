@@ -1,0 +1,18 @@
+flowchart TD
+    A[Source paths] --> B[Walk files]
+    B --> C{Python source?}
+    C -->|yes| D[AST chunking: module, class, function, method]
+    C -->|no| E[Sliding line-window chunks]
+    D --> F[Chunks]
+    E --> F[Chunks]
+    F --> G[Embed each chunk text]
+    G --> H[L2-normalized vector matrix]
+    F --> I[Tokenize and build BM25 lexical index]
+    J[Query] --> K[Embed query -> cosine vs matrix]
+    J --> L[BM25 scores over chunks]
+    H --> K
+    I --> L
+    K --> M[Min-max normalize both score sets]
+    L --> M
+    M --> N["Fuse: alpha * vector + (1 - alpha) * lexical"]
+    N --> O[Sort, take top k -> SearchResult list]
