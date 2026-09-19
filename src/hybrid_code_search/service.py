@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
@@ -80,9 +82,27 @@ class HealthResponse(BaseModel):
     chunks: int
 
 
-def create_app(index: CodeIndex | None = None) -> FastAPI:
-    """Build a FastAPI app holding a mutable, optionally pre-populated index."""
+def _resolve_within(base: str, requested: str) -> str:
+    """Resolve ``requested`` against ``base`` and reject anything outside it."""
+    try:
+        candidate = os.path.realpath(os.path.join(base, requested))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid path") from exc
+    if candidate == base:
+        return base
+    if not candidate.startswith(os.path.join(base, "")):
+        raise HTTPException(status_code=400, detail="path is outside the allowed root")
+    return candidate
+
+
+def create_app(index: CodeIndex | None = None, *, root: str | None = None) -> FastAPI:
+    """Build a FastAPI app holding a mutable, optionally pre-populated index.
+
+    ``POST /index`` only reads paths inside ``root``, which defaults to the
+    current working directory.
+    """
     app = FastAPI(title="hybrid-code-search", version=__version__)
+    allowed_root = os.path.realpath(root if root is not None else os.getcwd())
 
     # The index is held on app.state so routes and re-indexing can mutate it
     # without rebinding a module-level global, which keeps the app testable.
@@ -107,7 +127,8 @@ def create_app(index: CodeIndex | None = None) -> FastAPI:
         else:
             raise HTTPException(status_code=400, detail="paths or root is required")
 
-        chunks = list(chunk_paths(paths))
+        resolved = [_resolve_within(allowed_root, p) for p in paths]
+        chunks = list(chunk_paths(resolved))
         new_index = CodeIndex.build(chunks, resolve_embedder())
         app.state.index = new_index
         return IndexResponse(chunks=len(new_index))
