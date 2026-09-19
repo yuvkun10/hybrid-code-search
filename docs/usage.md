@@ -91,7 +91,7 @@ uvicorn.run(create_app(), host="127.0.0.1", port=8000)
 
 Rebuilds the index from disk. Provide either `paths` (a list) or `root` (a single
 directory); one is required, or the call returns 400.
-Paths resolve against `create_app(root=...)` (default: the working directory); any path outside it returns 400.
+Paths resolve against `create_app(root=...)` (default: the working directory); any path outside it returns 400. Result paths are reported relative to that root.
 
 ```json
 {"root": "src/"}

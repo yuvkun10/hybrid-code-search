@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from . import __version__
-from .chunker import chunk_paths
+from .chunker import _chunk_id, chunk_paths
 from .embedder import resolve_embedder
 from .index import CodeIndex
 from .types import Chunk, SearchResult
@@ -95,6 +96,16 @@ def _resolve_within(base: str, requested: str) -> str:
     return candidate
 
 
+def _relative_to(base: str, chunk: Chunk) -> Chunk:
+    """Report chunk paths relative to ``base`` so responses never expose server paths."""
+    rel = os.path.relpath(chunk.path, base)
+    return replace(
+        chunk,
+        path=rel,
+        id=_chunk_id(rel, chunk.kind, chunk.symbol, chunk.start_line, chunk.end_line),
+    )
+
+
 def create_app(index: CodeIndex | None = None, *, root: str | None = None) -> FastAPI:
     """Build a FastAPI app holding a mutable, optionally pre-populated index.
 
@@ -128,7 +139,7 @@ def create_app(index: CodeIndex | None = None, *, root: str | None = None) -> Fa
             raise HTTPException(status_code=400, detail="paths or root is required")
 
         resolved = [_resolve_within(allowed_root, p) for p in paths]
-        chunks = list(chunk_paths(resolved))
+        chunks = [_relative_to(allowed_root, chunk) for chunk in chunk_paths(resolved)]
         new_index = CodeIndex.build(chunks, resolve_embedder())
         app.state.index = new_index
         return IndexResponse(chunks=len(new_index))

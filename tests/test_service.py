@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -181,3 +182,16 @@ def test_index_rejects_symlink_escaping_root(tmp_path: Path) -> None:
 def test_index_rejects_path_with_null_byte(client: TestClient) -> None:
     response = client.post("/index", json={"paths": ["sample\x00.py"]})
     assert response.status_code == 400
+
+
+def test_search_results_use_paths_relative_to_root(tmp_path: Path) -> None:
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "mod.py").write_text("def add(a, b):\n    return a + b\n")
+    app = create_app(root=str(tmp_path))
+    client = TestClient(app)
+    assert client.post("/index", json={"paths": ["pkg"]}).status_code == 200
+    body = client.post("/search", json={"query": "add", "k": 5}).json()
+    paths = {hit["chunk"]["path"] for hit in body}
+    assert paths, "expected at least one hit"
+    assert all(not p.startswith(str(tmp_path)) and not os.path.isabs(p) for p in paths)
+    assert "pkg/mod.py" in paths
