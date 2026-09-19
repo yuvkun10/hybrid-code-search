@@ -7,7 +7,7 @@ updates:
     time: '09:00'
     timezone: Australia/Melbourne
     day: wednesday
-  open-pull-requests-limit: 5
+  open-pull-requests-limit: 0
   groups:
     actions-minor-patch:
       applies-to: version-updates
@@ -33,7 +33,7 @@ updates:
     time: '09:10'
     timezone: Australia/Melbourne
     day: wednesday
-  open-pull-requests-limit: 5
+  open-pull-requests-limit: 0
   groups:
     pip-minor-patch:
       applies-to: version-updates
