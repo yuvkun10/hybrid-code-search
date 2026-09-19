@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -62,7 +63,7 @@ def reverse_linked_list(head: object) -> object:
 def client(tmp_path: Path) -> TestClient:
     source_file = tmp_path / "sample.py"
     source_file.write_text(_SAMPLE_SOURCE, encoding="utf-8")
-    return TestClient(create_app())
+    return TestClient(create_app(root=str(tmp_path)))
 
 
 def test_health_ok(client: TestClient) -> None:
@@ -110,7 +111,7 @@ def test_search_top_result_matches_query(tmp_path: Path) -> None:
     (tmp_path / "timestamps.py").write_text(_TIMESTAMP_SOURCE, encoding="utf-8")
     (tmp_path / "lists.py").write_text(_LIST_SOURCE, encoding="utf-8")
 
-    app = create_app()
+    app = create_app(root=str(tmp_path))
     client = TestClient(app)
     client.post("/index", json={"paths": [str(tmp_path)]})
 
@@ -138,3 +139,59 @@ def test_index_requires_paths_or_root(client: TestClient) -> None:
 def test_index_empty_paths_returns_400(client: TestClient) -> None:
     response = client.post("/index", json={"paths": []})
     assert response.status_code == 400
+
+
+def test_index_accepts_relative_path_inside_root(client: TestClient) -> None:
+    response = client.post("/index", json={"root": "sample.py"})
+    assert response.status_code == 200
+    assert response.json()["chunks"] > 0
+
+
+@pytest.mark.parametrize("escape", ["..", "../..", "/", "sample.py/../../outside"])
+def test_index_rejects_paths_outside_root(client: TestClient, escape: str) -> None:
+    response = client.post("/index", json={"paths": [escape]})
+    assert response.status_code == 400
+    assert client.get("/health").json()["chunks"] == 0
+
+
+def test_index_rejects_sibling_with_shared_prefix(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    sibling = tmp_path / "repo-secrets"
+    root.mkdir()
+    sibling.mkdir()
+    (sibling / "leak.py").write_text(_SAMPLE_SOURCE, encoding="utf-8")
+
+    client = TestClient(create_app(root=str(root)))
+    response = client.post("/index", json={"root": str(sibling)})
+    assert response.status_code == 400
+
+
+def test_index_rejects_symlink_escaping_root(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (outside / "leak.py").write_text(_SAMPLE_SOURCE, encoding="utf-8")
+    (root / "link").symlink_to(outside, target_is_directory=True)
+
+    client = TestClient(create_app(root=str(root)))
+    response = client.post("/index", json={"paths": ["link"]})
+    assert response.status_code == 400
+
+
+def test_index_rejects_path_with_null_byte(client: TestClient) -> None:
+    response = client.post("/index", json={"paths": ["sample\x00.py"]})
+    assert response.status_code == 400
+
+
+def test_search_results_use_paths_relative_to_root(tmp_path: Path) -> None:
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "mod.py").write_text("def add(a, b):\n    return a + b\n")
+    app = create_app(root=str(tmp_path))
+    client = TestClient(app)
+    assert client.post("/index", json={"paths": ["pkg"]}).status_code == 200
+    body = client.post("/search", json={"query": "add", "k": 5}).json()
+    paths = {hit["chunk"]["path"] for hit in body}
+    assert paths, "expected at least one hit"
+    assert all(not p.startswith(str(tmp_path)) and not os.path.isabs(p) for p in paths)
+    assert "pkg/mod.py" in paths

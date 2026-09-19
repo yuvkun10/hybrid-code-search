@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import os
+from dataclasses import replace
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from . import __version__
-from .chunker import chunk_paths
+from .chunker import _chunk_id, chunk_paths
 from .embedder import resolve_embedder
 from .index import CodeIndex
 from .types import Chunk, SearchResult
@@ -80,9 +83,37 @@ class HealthResponse(BaseModel):
     chunks: int
 
 
-def create_app(index: CodeIndex | None = None) -> FastAPI:
-    """Build a FastAPI app holding a mutable, optionally pre-populated index."""
+def _resolve_within(base: str, requested: str) -> str:
+    """Resolve ``requested`` against ``base`` and reject anything outside it."""
+    try:
+        candidate = os.path.realpath(os.path.join(base, requested))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid path") from exc
+    if candidate == base:
+        return base
+    if not candidate.startswith(os.path.join(base, "")):
+        raise HTTPException(status_code=400, detail="path is outside the allowed root")
+    return candidate
+
+
+def _relative_to(base: str, chunk: Chunk) -> Chunk:
+    """Report chunk paths relative to ``base`` so responses never expose server paths."""
+    rel = os.path.relpath(chunk.path, base)
+    return replace(
+        chunk,
+        path=rel,
+        id=_chunk_id(rel, chunk.kind, chunk.symbol, chunk.start_line, chunk.end_line),
+    )
+
+
+def create_app(index: CodeIndex | None = None, *, root: str | None = None) -> FastAPI:
+    """Build a FastAPI app holding a mutable, optionally pre-populated index.
+
+    ``POST /index`` only reads paths inside ``root``, which defaults to the
+    current working directory.
+    """
     app = FastAPI(title="hybrid-code-search", version=__version__)
+    allowed_root = os.path.realpath(root if root is not None else os.getcwd())
 
     # The index is held on app.state so routes and re-indexing can mutate it
     # without rebinding a module-level global, which keeps the app testable.
@@ -107,7 +138,8 @@ def create_app(index: CodeIndex | None = None) -> FastAPI:
         else:
             raise HTTPException(status_code=400, detail="paths or root is required")
 
-        chunks = list(chunk_paths(paths))
+        resolved = [_resolve_within(allowed_root, p) for p in paths]
+        chunks = [_relative_to(allowed_root, chunk) for chunk in chunk_paths(resolved)]
         new_index = CodeIndex.build(chunks, resolve_embedder())
         app.state.index = new_index
         return IndexResponse(chunks=len(new_index))
